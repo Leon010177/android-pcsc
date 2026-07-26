@@ -1,0 +1,208 @@
+--- /data/data/com.termux/files/home/.termux-build/libpcsclite/src/src/hotplug_libusb.c.orig	2026-07-25 23:39:16.358373025 +0300
++++ /data/data/com.termux/files/home/.termux-build/libpcsclite/src/src/hotplug_libusb.c	2026-07-26 21:11:17.740447469 +0300
+@@ -56,6 +56,7 @@
+ #include <pthread.h>
+ #include <signal.h>
+ #include <stdbool.h>
++#include <stdint.h>
+ 
+ #include "misc.h"
+ #include "wintypes.h"
+@@ -89,6 +90,10 @@
+ static int driverSize = -1;
+ static _Atomic bool ExitHotPlug = false;
+ static int rescan_pipe[] = { -1, -1 };
++
++/* USB device passed by Termux:API through TERMUX_USB_FD */
++static libusb_device_handle *termux_usb_handle = NULL;
++static libusb_device *termux_usb_device = NULL;
+ extern int HPForceReaderPolling;
+ 
+ /* values of ifdCapabilities bits */
+@@ -409,6 +414,11 @@
+ 			snprintf(bus_device, BUS_DEVICE_STRSIZE, "%d:%d:%d",
+ 					bus_number, device_address, interface);
+ 			bus_device[BUS_DEVICE_STRSIZE - 1] = '\0';
++
++                                if (config_desc->interface[interface].num_altsetting == 0 ||
++                                    config_desc->interface[interface].altsetting[0].bInterfaceClass != 0x0B)
++                                        continue;
++
+ 			newreader = true;
+ 
+ 			/* Check if the reader is a new one */
+@@ -456,8 +466,41 @@
+ 	bool do_polling;
+ 	int r;
+ 	char c = 42;	/* magic value */
++        const char *termux_fd_text = getenv("TERMUX_USB_FD");
++        long termux_fd = -1;
+ 
+-	r = libusb_init(ctx);
++        if (termux_fd_text)
++        {
++                char *end = NULL;
++
++                errno = 0;
++                termux_fd = strtol(termux_fd_text, &end, 10);
++                if ((errno != 0) || (end == termux_fd_text)
++                        || (*end != '\0') || (termux_fd < 0))
++                {
++                        Log2(PCSC_LOG_CRITICAL,
++                                "Invalid TERMUX_USB_FD: %s", termux_fd_text);
++                        kill(getpid(), SIGTERM);
++                        return NULL;
++                }
++
++                r = libusb_set_option(ctx,
++                        LIBUSB_OPTION_NO_DEVICE_DISCOVERY);
++                if (r < 0)
++                {
++                        Log2(PCSC_LOG_CRITICAL,
++                                "libusb_set_option failed: %s",
++                                libusb_error_name(r));
++                        kill(getpid(), SIGTERM);
++                        return NULL;
++                }
++
++                Log2(PCSC_LOG_INFO,
++                        "Termux USB mode, file descriptor: %ld",
++                        termux_fd);
++        }
++
++        r = libusb_init(ctx);
+ 	if (r < 0)
+ 	{
+ 		Log2(PCSC_LOG_CRITICAL, "libusb_init failed: %s", libusb_error_name(r));
+@@ -465,9 +508,107 @@
+ 		kill(getpid(), SIGTERM);
+ 		return NULL;
+ 	}
+-
+-	/* scan the USB bus for devices at startup */
+-	HPRescanUsbBus();
++        if (termux_fd_text)
++        {
++                struct libusb_device_descriptor desc;
++
++                r = libusb_wrap_sys_device(ctx, (intptr_t)termux_fd,
++                        &termux_usb_handle);
++                if (r < 0)
++                {
++                        Log2(PCSC_LOG_CRITICAL,
++                                "libusb_wrap_sys_device failed: %s",
++                                libusb_error_name(r));
++                        kill(getpid(), SIGTERM);
++                        return NULL;
++                }
++
++                termux_usb_device = libusb_get_device(termux_usb_handle);
++                if (NULL == termux_usb_device)
++                {
++                        Log1(PCSC_LOG_CRITICAL,
++                                "libusb_get_device returned NULL");
++                        kill(getpid(), SIGTERM);
++                        return NULL;
++                }
++
++                r = libusb_get_device_descriptor(termux_usb_device, &desc);
++                if (r < 0)
++                {
++                        Log2(PCSC_LOG_CRITICAL,
++                                "libusb_get_device_descriptor failed: %s",
++                                libusb_error_name(r));
++                        kill(getpid(), SIGTERM);
++                        return NULL;
++                }
++
++                Log3(PCSC_LOG_INFO, "Termux USB device: %04x:%04x",
++                        desc.idVendor, desc.idProduct);
++
++                {
++                        struct libusb_config_descriptor *config_desc = NULL;
++                        struct _driverTracker *driver;
++                        struct _driverTracker *classdriver;
++                        uint8_t bus_number;
++                        uint8_t device_address;
++                        int interface;
++                        char bus_device[BUS_DEVICE_STRSIZE];
++
++                        bus_number =
++                                libusb_get_bus_number(termux_usb_device);
++                        device_address =
++                                libusb_get_device_address(termux_usb_device);
++
++                        r = libusb_get_active_config_descriptor(
++                                termux_usb_device, &config_desc);
++                        if (r < 0)
++                        {
++                                Log2(PCSC_LOG_CRITICAL,
++                                        "failed to get Termux USB configuration: %s",
++                                        libusb_error_name(r));
++                                kill(getpid(), SIGTERM);
++                                return NULL;
++                        }
++
++                        driver = get_driver(desc.idVendor,
++                                desc.idProduct, &classdriver);
++                        if (NULL == driver)
++                        {
++                                Log3(PCSC_LOG_ERROR,
++                                        "Termux USB device %04x:%04x has no matching PC/SC driver",
++                                        desc.idVendor, desc.idProduct);
++                                libusb_free_config_descriptor(config_desc);
++                                kill(getpid(), SIGTERM);
++                                return NULL;
++                        }
++
++                        for (interface = 0;
++                                interface < config_desc->bNumInterfaces;
++                                interface++)
++                        {
++                                snprintf(bus_device, BUS_DEVICE_STRSIZE,
++                                        "%d:%d:%d", bus_number,
++                                        device_address, interface);
++                                bus_device[BUS_DEVICE_STRSIZE - 1] = '\0';
++
++                                if (config_desc->interface[interface].num_altsetting == 0 ||
++                                    config_desc->interface[interface].altsetting[0].bInterfaceClass != 0x0B)
++                                        continue;
++
++
++                                HPAddHotPluggable(termux_usb_device, desc,
++                                        bus_device,
++                                        &config_desc->interface[interface],
++                                        driver, classdriver);
++                        }
++
++                        libusb_free_config_descriptor(config_desc);
++                }
++        }
++        else
++        {
++                /* scan the USB bus for devices at startup */
++        }
+ 
+ 	/* signal that the initially connected readers are now visible */
+ 	if (write(pipefd[1], &c, 1) == -1)
+@@ -502,7 +643,11 @@
+ 		while (!ExitHotPlug)
+ 		{
+ 			SYS_Sleep(HPForceReaderPolling);
+-			HPRescanUsbBus();
++                        if (!termux_fd_text)
++                                HPRescanUsbBus();
++                        else
++                                continue;
++
+ 		}
+ 	}
+ 	else
+@@ -513,7 +658,6 @@
+ 			if (ExitHotPlug)
+ 				break;
+ 			Log1(PCSC_LOG_INFO, "Reload serial configuration");
+-			HPRescanUsbBus();
+ #ifdef USE_SERIAL
+ 			RFReCheckReaderConf();
+ #endif
