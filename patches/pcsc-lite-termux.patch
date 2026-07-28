@@ -1,5 +1,5 @@
 --- /data/data/com.termux/files/home/.termux-build/libpcsclite/src/src/hotplug_libusb.c.orig	2026-07-25 23:39:16.358373025 +0300
-+++ /data/data/com.termux/files/home/.termux-build/libpcsclite/src/src/hotplug_libusb.c	2026-07-26 21:11:17.740447469 +0300
++++ /data/data/com.termux/files/home/.termux-build/libpcsclite/src/src/hotplug_libusb.c	2026-07-26 22:11:51.852446083 +0300
 @@ -56,6 +56,7 @@
  #include <pthread.h>
  #include <signal.h>
@@ -74,7 +74,7 @@
  	if (r < 0)
  	{
  		Log2(PCSC_LOG_CRITICAL, "libusb_init failed: %s", libusb_error_name(r));
-@@ -465,9 +508,107 @@
+@@ -465,9 +508,108 @@
  		kill(getpid(), SIGTERM);
  		return NULL;
  	}
@@ -181,11 +181,12 @@
 +        else
 +        {
 +                /* scan the USB bus for devices at startup */
++                HPRescanUsbBus();
 +        }
  
  	/* signal that the initially connected readers are now visible */
  	if (write(pipefd[1], &c, 1) == -1)
-@@ -502,7 +643,11 @@
+@@ -502,7 +644,11 @@
  		while (!ExitHotPlug)
  		{
  			SYS_Sleep(HPForceReaderPolling);
@@ -198,7 +199,7 @@
  		}
  	}
  	else
-@@ -513,7 +658,6 @@
+@@ -513,7 +659,6 @@
  			if (ExitHotPlug)
  				break;
  			Log1(PCSC_LOG_INFO, "Reload serial configuration");
