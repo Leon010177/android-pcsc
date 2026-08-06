@@ -1,5 +1,9 @@
 # Android PC/SC for Termux
 
+> **Status:** Implementation complete; upstream review pending.
+>
+> **Start here:** docs/PROJECT_STATUS.md
+
 ## Overview
 
 This project provides Android support for the standard PC/SC smart card stack by adapting `pcsc-lite` and `libccid` to work with Android's USB permission model through `termux-usb`.
